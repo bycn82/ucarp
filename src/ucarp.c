@@ -42,7 +42,8 @@ static void usage(void)
         "--ignoreifstate (-S): ignore interface state (down, no carrier)\n"
         "--nomcast (-M): use broadcast (instead of multicast) advertisements\n"
         "--facility=<facility> (-f): set syslog facility (default=daemon)\n"
-        "--xparam=<value> (-x): extra parameter to send to up/down scripts\n"       
+        "--xparam=<value> (-x): extra parameter to send to up/down scripts\n"
+        "--ctrlport=<port> (-c <port>): control port on TCP 127.0.0.1 (cmd: state)\n"       
         "\n"
         "Sample usage:\n"
         "\n"
@@ -236,6 +237,17 @@ int main(int argc, char *argv[])
         }
         case 'M': {
             no_mcast = 1;
+            break;
+        }
+        case 'c': {
+            char *end;
+            unsigned long p = strtoul(optarg, &end, 10);
+
+            if (*optarg == 0 || *end != 0 || p == 0UL || p > 65535UL) {
+                logfile(LOG_ERR, _("Invalid control port: [%s]"), optarg);
+                return 1;
+            }
+            ctrl_port = (unsigned int) p;
             break;
         }
         default: {

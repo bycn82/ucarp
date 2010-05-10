@@ -32,4 +32,5 @@ GLOBAL0(char *vaddr_arg);
 GLOBAL0(char *xparam);
 GLOBAL(unsigned char inaddr_carp_group[4], { 224 _COMA_ 0 _COMA_ 0 _COMA_ 18 });
 GLOBAL0(sig_atomic_t received_signal);
+GLOBAL0(unsigned int ctrl_port);
 #endif

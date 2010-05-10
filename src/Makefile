@@ -16,12 +16,12 @@ CFLAGS  += -Wall
 LIBS     = -lpcap
 
 SRCS = ucarp.c carp.c crypto-sha1.c daemonize.c fakesnprintf.c fillmac.c \
-       garp.c log.c mysnprintf.c spawn.c bsd-getopt_long.c
+       garp.c log.c mysnprintf.c spawn.c bsd-getopt_long.c ctrl.c
 OBJS = ucarp.o carp.o crypto-sha1.o daemonize.o fakesnprintf.o fillmac.o \
-       garp.o log.o mysnprintf.o spawn.o bsd-getopt_long.o
+       garp.o log.o mysnprintf.o spawn.o bsd-getopt_long.o ctrl.o
 HDRS = bsd-getopt_long.h carp_p.h crypto.h crypto-sha1.h daemonize.h \
        fakesnprintf.h fillmac.h garp.h gettext.h globals.h ip_carp.h log.h \
-       mysnprintf.h spawn.h syslognames.h ucarp.h ucarp_p.h
+       mysnprintf.h spawn.h syslognames.h ucarp.h ucarp_p.h ctrl.h
 
 # ---- Common settings ----
 DEFS_COMMON = \

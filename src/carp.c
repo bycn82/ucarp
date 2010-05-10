@@ -43,10 +43,24 @@
 #include "spawn.h"
 #include "log.h"
 #include "carp_p.h"
+#include "ctrl.h"
 
 #ifdef WITH_DMALLOC
 # include <dmalloc.h>
 #endif
+
+const char *carp_state_name(void)
+{
+    switch (sc.sc_state) {
+    case INIT:
+        return "INIT";
+    case BACKUP:
+        return "BACKUP";
+    case MASTER:
+        return "MASTER";
+    }
+    return "UNKNOWN";
+}
 
 static void carp_set_state(struct carp_softc *sc, int state)
 {
@@ -700,7 +714,10 @@ int docarp(void)
     char errbuf[PCAP_ERRBUF_SIZE];
     struct ip_mreq req_add;   
     struct bpf_program bpfp;
-    struct pollfd pfds[1];
+    struct pollfd pfds[3];
+    int npfds;
+    int ctrl_li;
+    int ctrl_ci;
     struct ifreq iface;
     int fd;
     int nfds;
@@ -767,6 +784,9 @@ int docarp(void)
     }
     (void) signal(SIGUSR1, sighandler_usr);
     (void) signal(SIGUSR2, sighandler_usr);
+    if (ctrl_init() != 0) {
+        return -1;
+    }
 
     if (gettimeofday(&now, NULL) != 0) {
         logfile(LOG_WARNING, _("initializing now to gettimeofday() failed: %s"),
@@ -859,7 +879,23 @@ int docarp(void)
             poll_sleep_time = (time_until_advert.tv_sec * 1000) +
                 (time_until_advert.tv_usec / 1000);
         }
-        nfds = poll(pfds, (nfds_t) 1, MAX(1, poll_sleep_time));
+        npfds = 1;
+        ctrl_li = ctrl_ci = -1;
+        pfds[0].revents = 0;
+        if (ctrl_listen_fd() != -1) {
+            ctrl_li = npfds++;
+            pfds[ctrl_li].fd = ctrl_listen_fd();
+            pfds[ctrl_li].events = POLLIN;
+            pfds[ctrl_li].revents = 0;
+        }
+        if (ctrl_client_fd() != -1) {
+            ctrl_ci = npfds++;
+            pfds[ctrl_ci].fd = ctrl_client_fd();
+            pfds[ctrl_ci].events = POLLIN;
+            pfds[ctrl_ci].revents = 0;
+        }
+        poll_sleep_time = ctrl_poll_timeout(poll_sleep_time);
+        nfds = poll(pfds, (nfds_t) npfds, MAX(1, poll_sleep_time));
         if (nfds == -1) {
             if (errno == EINTR) {
                continue;
@@ -876,9 +912,18 @@ int docarp(void)
                     strerror(errno));
             continue;
         }        
-        if (nfds == 1) {
+        if (nfds > 0 && (pfds[0].revents & POLLIN) != 0) {
             pcap_dispatch(dev_desc, 1, packethandler, NULL);
         }
+        if (nfds > 0 && ctrl_ci != -1 &&
+            (pfds[ctrl_ci].revents & (POLLIN | POLLERR | POLLHUP)) != 0) {
+            ctrl_on_readable();
+        }
+        if (nfds > 0 && ctrl_li != -1 &&
+            (pfds[ctrl_li].revents & POLLIN) != 0) {
+            ctrl_on_accept();
+        }
+        ctrl_check_timeout();
         if (sc.sc_md_tmo.tv_sec != 0 && timercmp(&now, &sc.sc_md_tmo, >)) {
             carp_master_down(&sc);
         }
