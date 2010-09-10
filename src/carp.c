@@ -666,6 +666,30 @@ static void packethandler(unsigned char *dummy,
     }
 }     
 
+/* One-shot role changes; normal election remains active. */
+void carp_control_master(void)
+{
+    if (sc.sc_state == MASTER) {
+        return;
+    }
+    if (sc.sc_state == INIT) {
+        carp_set_state(&sc, BACKUP);
+    }
+    carp_master_down(&sc);
+}
+
+void carp_control_backup(void)
+{
+    if (sc.sc_state == BACKUP) {
+        return;
+    }
+    carp_set_state(&sc, BACKUP);
+    sc.sc_delayed_arp = 0;
+    sc.sc_ad_tmo.tv_sec = 0;
+    sc.sc_ad_tmo.tv_usec = 0;
+    carp_setrun(&sc, 0);
+}
+
 RETSIGTYPE sighandler_exit(const int sig)
 {
     (void) sig;

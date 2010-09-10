@@ -3,6 +3,8 @@
 
 /* provided by carp.c */
 const char *carp_state_name(void);
+void carp_control_master(void);
+void carp_control_backup(void);
 
 int  ctrl_init(void);
 int  ctrl_listen_fd(void);

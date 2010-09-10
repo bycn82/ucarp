@@ -43,7 +43,7 @@ static void usage(void)
         "--nomcast (-M): use broadcast (instead of multicast) advertisements\n"
         "--facility=<facility> (-f): set syslog facility (default=daemon)\n"
         "--xparam=<value> (-x): extra parameter to send to up/down scripts\n"
-        "--ctrlport=<port> (-c <port>): control port on TCP 127.0.0.1 (cmd: state)\n"       
+        "--ctrlport=<port> (-c <port>): control port on TCP 127.0.0.1 (cmd: state/master/backup)\n"       
         "\n"
         "Sample usage:\n"
         "\n"

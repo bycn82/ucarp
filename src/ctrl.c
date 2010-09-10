@@ -3,9 +3,11 @@
  *
  * -c <port> / --ctrlport=<port> : listen on TCP 127.0.0.1:<port>.
  * A client sends one line. If nothing complete arrives within 1 second
- * the connection is closed. Supported command:
+ * the connection is closed. Supported commands:
  *
  *   state   -> one line of JSON with the current state and configuration
+ *   master  -> promote, then return state JSON
+ *   backup  -> demote, then return state JSON
  *
  * Everything is non-blocking and driven by the main poll() loop in carp.c,
  * so a slow client never delays CARP advertisements.
@@ -308,7 +310,13 @@ static void process_line(void)
                      e[-1] == ' ' || e[-1] == '\t')) {
         *--e = 0;
     }
-    if (strcmp(s, "state") == 0) {
+    if (strcmp(s, "state") == 0 || strcmp(s, "master") == 0 ||
+        strcmp(s, "backup") == 0) {
+        if (strcmp(s, "master") == 0) {
+            carp_control_master();
+        } else if (strcmp(s, "backup") == 0) {
+            carp_control_backup();
+        }
         build_state(&o);
         reply(o.buf, o.len);
     } else {
