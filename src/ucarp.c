@@ -22,6 +22,7 @@
 static void usage(void)
 {
     puts("\n" PACKAGE_STRING " - " __DATE__ "\n");
+    puts(PACKAGE_DEVELOPER "\n");
     fputs(_(
         "--interface=<if> (-i <if>): bind interface <if>\n"
         "--srcip=<ip> (-s <ip>): source (real) IP address of that host\n"
@@ -40,21 +41,16 @@ static void usage(void)
         "--shutdown (-z): call shutdown script at exit\n"
         "--daemonize (-B): run in background\n"
         "--ignoreifstate (-S): ignore interface state (down, no carrier)\n"
+        "--mcast=<ip> (-m <ip>): IPv4 multicast group (default 224.0.0.18)\n"
         "--nomcast (-M): use broadcast (instead of multicast) advertisements\n"
         "--facility=<facility> (-f): set syslog facility (default=daemon)\n"
         "--xparam=<value> (-x): extra parameter to send to up/down scripts\n"
         "--ctrlport=<port> (-c <port>): control port on TCP 127.0.0.1 (cmd: state/master/backup)\n"       
         "\n"
-        "Sample usage:\n"
-        "\n"
-        "Manage the 10.1.1.252 shared virtual address on interface eth0, with\n"
-        "1 as a virtual address idenfitier, mypassword as a password, and\n"
-        "10.1.1.1 as a real permanent address for this host.\n"
-        "Call /etc/vip-up.sh when the host becomes a master, and\n"
-        "/etc/vip-down.sh when the virtual IP address has to be disabled.\n"
+        "Example:\n"
         "\n"
         "ucarp --interface=eth0 --srcip=10.1.1.1 --vhid=1 --pass=mypassword \\\n"
-        "      --addr=10.1.1.252 \\\n"
+        "      --addr=10.1.1.252 --ctrlport=9000 \\\n"
         "      --upscript=/etc/vip-up.sh --downscript=/etc/vip-down.sh\n"
         "\n\n"    
         "Please report bugs to "), stdout);
@@ -88,6 +84,7 @@ int main(int argc, char *argv[])
 {
     int option_index = 0;
     int fodder;
+    int mcast_set = 0;
     
 #ifdef HAVE_SETLOCALE
     setlocale(LC_ALL, "");
@@ -235,6 +232,23 @@ int main(int argc, char *argv[])
             }
             break;
         }
+        case 'm': {
+            struct in_addr group;
+            unsigned long host;
+
+            if (inet_pton(AF_INET, optarg, &group) != 1) {
+                logfile(LOG_ERR, _("Invalid multicast address: [%s]"), optarg);
+                return 1;
+            }
+            host = (unsigned long) ntohl(group.s_addr);
+            if ((host & 0xf0000000UL) != 0xe0000000UL) {
+                logfile(LOG_ERR, _("Not an IPv4 multicast address: [%s]"), optarg);
+                return 1;
+            }
+            memcpy(inaddr_carp_group, &group.s_addr, sizeof group.s_addr);
+            mcast_set = 1;
+            break;
+        }
         case 'M': {
             no_mcast = 1;
             break;
@@ -274,6 +288,10 @@ int main(int argc, char *argv[])
     }
     if (pass == NULL || *pass == 0) {
         logfile(LOG_ERR, _("You must supply a password"));
+        return 1;
+    }
+    if (mcast_set && no_mcast) {
+        logfile(LOG_ERR, _("--mcast and --nomcast cannot be used together"));
         return 1;
     }
     if (advbase == 0 && advskew == 0) {

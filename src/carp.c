@@ -1,4 +1,5 @@
 /*
+ * Copyright (c) 2010-2015 Bill Yuan. All rights reserved.
  * Copyright (c) 2004-2010 Frank Denis. All rights reserved.
  * 
  * This crucial part of UCARP is derived from the OpenBSD project.
@@ -279,9 +280,9 @@ static void carp_send_ad(struct carp_softc *sc)
         eh.ether_dhost[0] = 0x01;
         eh.ether_dhost[1] = 0x00;
         eh.ether_dhost[2] = 0x5e;
-        eh.ether_dhost[3] = 0x00;
-        eh.ether_dhost[4] = 0x00;
-        eh.ether_dhost[5] = 0x12;        
+        eh.ether_dhost[3] = inaddr_carp_group[1] & 0x7f;
+        eh.ether_dhost[4] = inaddr_carp_group[2];
+        eh.ether_dhost[5] = inaddr_carp_group[3];        
     }    
     eh.ether_type = htons(ETHERTYPE_IP);    
     
@@ -465,6 +466,10 @@ static void packethandler(unsigned char *dummy,
     caplen = header->caplen - sizeof etherhead;
     memcpy(&iphead, sp, sizeof iphead);    
     if (iphead.ip_src.s_addr == srcip.s_addr) {
+        return;
+    }
+    if (!no_mcast && memcmp(&iphead.ip_dst.s_addr, inaddr_carp_group,
+                            sizeof iphead.ip_dst.s_addr) != 0) {
         return;
     }
     ip_len = iphead.ip_hl << 2;
@@ -724,8 +729,18 @@ char *build_bpf_rule(void)
         logfile(LOG_ERR, "inet_ntoa: [%s]", strerror(errno));
         return NULL;
     }
-    snprintf(rule, sizeof rule, "proto %u and src host not %s",
-             (unsigned int) IPPROTO_CARP, srcip_s);
+    if (no_mcast) {
+        snprintf(rule, sizeof rule, "proto %u and src host not %s",
+                 (unsigned int) IPPROTO_CARP, srcip_s);
+    } else {
+        snprintf(rule, sizeof rule,
+                 "proto %u and src host not %s and dst host %u.%u.%u.%u",
+                 (unsigned int) IPPROTO_CARP, srcip_s,
+                 (unsigned int) inaddr_carp_group[0],
+                 (unsigned int) inaddr_carp_group[1],
+                 (unsigned int) inaddr_carp_group[2],
+                 (unsigned int) inaddr_carp_group[3]);
+    }
 #ifdef DEBUG
     logfile(LOG_DEBUG, "BPF rule: [%s]", rule);
 #endif
@@ -825,7 +840,8 @@ int docarp(void)
     }
     if (!no_mcast) {
         memset(&req_add, 0, sizeof req_add);
-        req_add.imr_multiaddr.s_addr = inet_addr("224.0.0.18");
+        memcpy(&req_add.imr_multiaddr.s_addr, inaddr_carp_group,
+               sizeof req_add.imr_multiaddr.s_addr);
         req_add.imr_interface.s_addr = srcip.s_addr;
         if (setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP,
                        &req_add, sizeof req_add) < 0) {

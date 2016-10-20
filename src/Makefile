@@ -1,11 +1,12 @@
 # Makefile for UCARP (no autotools or configure needed)
 #
-# FreeBSD 7 : make            (bmake, base system)
-# CetOS 5   : make            (GNU make >= 4.0, needs libpcap-dev / libpcap-devel)
+# DragonflyBSD : make            (make, base system)
+# FreeBSD : make            (make, base system)
+# Ubuntu  : make            (GNU make)
 #
 
 PROG     = ucarp
-VERSION  = 1.5.2
+VERSION  = 1.5.3
 PREFIX  ?= /usr/local
 SBINDIR ?= $(PREFIX)/sbin
 
@@ -28,7 +29,8 @@ DEFS_COMMON = \
 	-DPACKAGE='"ucarp"' \
 	-DVERSION='"$(VERSION)"' \
 	-DPACKAGE_STRING='"ucarp $(VERSION)"' \
-	-DPACKAGE_BUGREPORT='"the UCARP maintainers"' \
+	-DPACKAGE_BUGREPORT='"https://github.com/bycn82/ucarp/issues"' \
+	-DPACKAGE_DEVELOPER='"Bill Yuan <bycn82 dragonflybsd org>"' \
 	-DLOCALEDIR='"$(PREFIX)/share/locale"' \
 	-DSTDC_HEADERS=1 -DHAVE_STDLIB_H=1 -DHAVE_STRING_H=1 -DHAVE_STRINGS_H=1 \
 	-DHAVE_UNISTD_H=1 -DHAVE_INTTYPES_H=1 -DHAVE_FCNTL_H=1 \
