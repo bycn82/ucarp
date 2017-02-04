@@ -19,6 +19,12 @@ int spawn_handler(const int dev_desc_fd, const char * const script)
     }
     pid = fork();
     if (pid == (pid_t) 0) {
+        /*
+         * The control port sets SIGPIPE to SIG_IGN, and ignored signals
+         * survive exec(). Restore the default so scripts behave exactly
+         * as they would when started from a shell.
+         */
+        (void) signal(SIGPIPE, SIG_DFL);
         (void) close(dev_desc_fd);
 	execl(script, script, interface, vaddr_arg, xparam, (char *) NULL);
 	logfile(LOG_ERR, _("Unable to exec %s %s %s%s%s: %s"), 
