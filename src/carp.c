@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010-2015 Bill Yuan. All rights reserved.
+ * Copyright (c) 2010-2017 Bill Yuan. All rights reserved.
  * Copyright (c) 2004-2010 Frank Denis. All rights reserved.
  * 
  * This crucial part of UCARP is derived from the OpenBSD project.
@@ -49,6 +49,14 @@
 #ifdef WITH_DMALLOC
 # include <dmalloc.h>
 #endif
+
+/* 0 while the interface is down (not RUNNING) and we are waiting */
+static int iface_running = 1;
+
+int carp_iface_running(void)
+{
+    return iface_running;
+}
 
 const char *carp_state_name(void)
 {
@@ -672,27 +680,32 @@ static void packethandler(unsigned char *dummy,
 }     
 
 /* One-shot role changes; normal election remains active. */
-void carp_control_master(void)
+int carp_control_master(void)
 {
+    if (!iface_running) {
+        return -1;      /* would be undone at once by the down handling */
+    }
     if (sc.sc_state == MASTER) {
-        return;
+        return 0;
     }
     if (sc.sc_state == INIT) {
         carp_set_state(&sc, BACKUP);
     }
     carp_master_down(&sc);
+    return 0;
 }
 
-void carp_control_backup(void)
+int carp_control_backup(void)
 {
     if (sc.sc_state == BACKUP) {
-        return;
+        return 0;
     }
     carp_set_state(&sc, BACKUP);
     sc.sc_delayed_arp = 0;
     sc.sc_ad_tmo.tv_sec = 0;
     sc.sc_ad_tmo.tv_usec = 0;
     carp_setrun(&sc, 0);
+    return 0;
 }
 
 RETSIGTYPE sighandler_exit(const int sig)
@@ -760,7 +773,6 @@ int docarp(void)
     struct ifreq iface;
     int fd;
     int nfds;
-    int iface_running = 1;
     int poll_sleep_time;
     struct timeval time_until_advert;
 
@@ -873,7 +885,8 @@ int docarp(void)
             if (iface_running) {
             iface_running = 0;
         }
-        sleep(SECONDS_TO_WAIT_AFTER_INTERFACE_IS_DOWN);
+        /* keep answering the control port instead of sleep() */
+        ctrl_serve_for(SECONDS_TO_WAIT_AFTER_INTERFACE_IS_DOWN * 1000U);
         continue;
         }
         } else {

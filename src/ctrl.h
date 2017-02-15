@@ -3,8 +3,9 @@
 
 /* provided by carp.c */
 const char *carp_state_name(void);
-void carp_control_master(void);
-void carp_control_backup(void);
+int  carp_control_master(void);
+int  carp_control_backup(void);
+int  carp_iface_running(void);
 
 int  ctrl_init(void);
 int  ctrl_listen_fd(void);
@@ -13,5 +14,6 @@ int  ctrl_poll_timeout(int cur_ms);
 void ctrl_on_accept(void);
 void ctrl_on_readable(void);
 void ctrl_check_timeout(void);
+void ctrl_serve_for(unsigned int ms);
 
 #endif

@@ -6,7 +6,7 @@
 #
 
 PROG     = ucarp
-VERSION  = 1.5.3
+VERSION  = 1.5.4
 PREFIX  ?= /usr/local
 SBINDIR ?= $(PREFIX)/sbin
 

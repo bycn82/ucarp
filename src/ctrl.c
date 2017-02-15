@@ -32,6 +32,9 @@
  *   master  -> promote, then return state JSON
  *   backup  -> demote, then return state JSON
  *
+ * While the interface is down, "master" is refused (it would be undone
+ * immediately) and the JSON field "ifrunning" is false.
+ *
  * Everything is non-blocking and driven by the main poll() loop in carp.c,
  * so a slow client never delays CARP advertisements.
  */
@@ -285,6 +288,7 @@ static void build_state(struct out *o)
     out_kbool(o, "neutral", neutral != 0);
     out_kbool(o, "shutdown", shutdown_at_exit != 0);
     out_kbool(o, "ignoreifstate", ignoreifstate != 0);
+    out_kbool(o, "ifrunning", carp_iface_running() != 0);
     if (inet_ntop(AF_INET, inaddr_carp_group, ip, sizeof ip) == NULL) {
         ip[0] = 0;
     }
@@ -339,10 +343,18 @@ static void process_line(void)
     }
     if (strcmp(s, "state") == 0 || strcmp(s, "master") == 0 ||
         strcmp(s, "backup") == 0) {
+        int rc = 0;
+
         if (strcmp(s, "master") == 0) {
-            carp_control_master();
+            rc = carp_control_master();
         } else if (strcmp(s, "backup") == 0) {
-            carp_control_backup();
+            rc = carp_control_backup();
+        }
+        if (rc != 0) {
+            static const char err[] = "{\"error\":\"interface down\"}\n";
+            reply(err, sizeof err - 1U);
+            client_close();
+            return;
         }
         build_state(&o);
         reply(o.buf, o.len);
@@ -394,5 +406,58 @@ void ctrl_on_readable(void)
             process_line();   /* overlong line -> unknown command */
             return;
         }
+    }
+}
+
+/*
+ * Replacement for sleep() in the interface-down path of carp.c:
+ * wait up to <ms> milliseconds while still serving the control port.
+ */
+void ctrl_serve_for(unsigned int ms)
+{
+    struct timeval end, tv, left;
+    struct pollfd pfds[2];
+    int n, li, ci, to, r;
+
+    (void) gettimeofday(&end, NULL);
+    end.tv_sec += ms / 1000U;
+    end.tv_usec += (ms % 1000U) * 1000U;
+    if (end.tv_usec >= 1000000) {
+        end.tv_sec++;
+        end.tv_usec -= 1000000;
+    }
+    for (;;) {
+        if (gettimeofday(&tv, NULL) != 0 || !timercmp(&tv, &end, <)) {
+            return;
+        }
+        timersub(&end, &tv, &left);
+        to = (int) (left.tv_sec * 1000 + left.tv_usec / 1000) + 1;
+        if (listen_fd == -1) {
+            /* no control port: behave like the original sleep() */
+            (void) poll(NULL, (nfds_t) 0, to);
+            continue;
+        }
+        n = 0;
+        li = ci = -1;
+        li = n++;
+        pfds[li].fd = listen_fd;
+        pfds[li].events = POLLIN;
+        pfds[li].revents = 0;
+        if (client_fd != -1) {
+            ci = n++;
+            pfds[ci].fd = client_fd;
+            pfds[ci].events = POLLIN;
+            pfds[ci].revents = 0;
+        }
+        to = ctrl_poll_timeout(to);
+        r = poll(pfds, (nfds_t) n, to < 1 ? 1 : to);
+        if (r > 0 && ci != -1 &&
+            (pfds[ci].revents & (POLLIN | POLLERR | POLLHUP)) != 0) {
+            ctrl_on_readable();
+        }
+        if (r > 0 && (pfds[li].revents & POLLIN) != 0) {
+            ctrl_on_accept();
+        }
+        ctrl_check_timeout();
     }
 }
