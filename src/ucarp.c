@@ -42,6 +42,8 @@ static void usage(void)
         "--daemonize (-B): run in background\n"
         "--ignoreifstate (-S): ignore interface state (down, no carrier)\n"
         "--mcast=<ip> (-m <ip>): IPv4 multicast group (default 224.0.0.18)\n"
+        "--scripttimeout=<sec> (-T <sec>): kill up/down script after <sec>\n"
+        "    (default: advbase*deadratio-1, min 1; 0 = wait forever)\n"
         "--nomcast (-M): use broadcast (instead of multicast) advertisements\n"
         "--facility=<facility> (-f): set syslog facility (default=daemon)\n"
         "--xparam=<value> (-x): extra parameter to send to up/down scripts\n"
@@ -85,6 +87,7 @@ int main(int argc, char *argv[])
     int option_index = 0;
     int fodder;
     int mcast_set = 0;
+    int script_timeout_set = 0;
     
 #ifdef HAVE_SETLOCALE
     setlocale(LC_ALL, "");
@@ -249,6 +252,18 @@ int main(int argc, char *argv[])
             mcast_set = 1;
             break;
         }
+        case 'T': {
+            char *end;
+            unsigned long t = strtoul(optarg, &end, 10);
+
+            if (*optarg == 0 || *end != 0 || t > 3600UL) {
+                logfile(LOG_ERR, _("Invalid script timeout: [%s]"), optarg);
+                return 1;
+            }
+            script_timeout = (unsigned int) t;
+            script_timeout_set = 1;
+            break;
+        }
         case 'M': {
             no_mcast = 1;
             break;
@@ -289,6 +304,17 @@ int main(int argc, char *argv[])
     if (pass == NULL || *pass == 0) {
         logfile(LOG_ERR, _("You must supply a password"));
         return 1;
+    }
+    if (script_timeout_set == 0) {
+        /* must finish before the peer declares us dead */
+        unsigned int dead = (unsigned int) advbase * dead_ratio;
+
+        script_timeout = dead > 1U ? dead - 1U : 1U;
+    } else if (script_timeout != 0U &&
+               script_timeout >= (unsigned int) advbase * dead_ratio) {
+        logfile(LOG_WARNING, _("Script timeout %u >= advbase*deadratio (%u): "
+                               "a stuck script can still cause a split brain"),
+                script_timeout, (unsigned int) advbase * dead_ratio);
     }
     if (mcast_set && no_mcast) {
         logfile(LOG_ERR, _("--mcast and --nomcast cannot be used together"));

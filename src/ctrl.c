@@ -303,6 +303,7 @@ static void build_state(struct out *o)
              (unsigned int) hwaddr[2], (unsigned int) hwaddr[3],
              (unsigned int) hwaddr[4], (unsigned int) hwaddr[5]);
     out_kstr(o, "hwaddr", mac);
+    out_kuint(o, "scripttimeout", (unsigned long) script_timeout);
     out_kuint(o, "ctrlport", (unsigned long) ctrl_port);
     out_kuint(o, "pid", (unsigned long) getpid());
     out_raw(o, "}\n");
