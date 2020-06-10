@@ -45,6 +45,7 @@ static void usage(void)
         "--scripttimeout=<sec> (-T <sec>): kill up/down script after <sec>\n"
         "    (default: advbase*deadratio-1, min 1; 0 = wait forever)\n"
         "--nomcast (-M): use broadcast (instead of multicast) advertisements\n"
+        "--nospoof (-F): use the real interface MAC as source of advertisements\n"
         "--facility=<facility> (-f): set syslog facility (default=daemon)\n"
         "--xparam=<value> (-x): extra parameter to send to up/down scripts\n"
         "--ctrlport=<port> (-c <port>): control port on TCP 127.0.0.1 (cmd: state/master/backup)\n"       
@@ -262,6 +263,10 @@ int main(int argc, char *argv[])
             }
             script_timeout = (unsigned int) t;
             script_timeout_set = 1;
+            break;
+        }
+        case 'F': {
+            no_spoof = 1;
             break;
         }
         case 'M': {

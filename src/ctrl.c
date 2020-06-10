@@ -294,6 +294,7 @@ static void build_state(struct out *o)
     }
     out_kstr(o, "mcast", ip);
     out_kbool(o, "nomcast", no_mcast != 0);
+    out_kbool(o, "nospoof", no_spoof != 0);
     out_kbool(o, "daemonize", daemonize != 0);
     out_kstr(o, "upscript", upscript);
     out_kstr(o, "downscript", downscript);

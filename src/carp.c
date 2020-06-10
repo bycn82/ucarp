@@ -270,12 +270,18 @@ static void carp_send_ad(struct carp_softc *sc)
     sum = cksum(&ch, sizeof ch);
     ch.carp_cksum = htons(sum);    
     
-    eh.ether_shost[0] = 0x00;
-    eh.ether_shost[1] = 0x00;
-    eh.ether_shost[2] = 0x5e;
-    eh.ether_shost[3] = 0x00;
-    eh.ether_shost[4] = 0x00;
-    eh.ether_shost[5] = vhid;
+    if (no_spoof) {
+        /* real NIC MAC: needed where forged source MACs are dropped
+         * (VMware "Forged transmits", Hyper-V, port security) */
+        memcpy(eh.ether_shost, hwaddr, sizeof hwaddr);
+    } else {
+        eh.ether_shost[0] = 0x00;
+        eh.ether_shost[1] = 0x00;
+        eh.ether_shost[2] = 0x5e;
+        eh.ether_shost[3] = 0x00;
+        eh.ether_shost[4] = 0x00;
+        eh.ether_shost[5] = vhid;
+    }
     
     if (no_mcast) {
         eh.ether_dhost[0] = 0xff;
