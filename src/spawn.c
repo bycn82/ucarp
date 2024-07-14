@@ -73,6 +73,18 @@ int spawn_handler(const int dev_desc_fd, const char * const script)
          * as they would when started from a shell.
          */
         (void) signal(SIGPIPE, SIG_DFL);
+        {
+            /*
+             * Export the vhid so one script can serve several ucarp
+             * instances. Set in the child only; the buffer must stay
+             * valid until exec(), hence static.
+             */
+            static char vhid_env[sizeof "UCARP_VHID=255"];
+
+            snprintf(vhid_env, sizeof vhid_env, "UCARP_VHID=%u",
+                     (unsigned int) vhid);
+            (void) putenv(vhid_env);
+        }
         (void) close(dev_desc_fd);
         execl(script, script, interface, vaddr_arg, xparam, (char *) NULL);
         logfile(LOG_ERR, _("Unable to exec %s %s %s%s%s: %s"),
