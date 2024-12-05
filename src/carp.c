@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010-2017 Bill Yuan. All rights reserved.
+ * Copyright (c) 2010-2024 Bill Yuan. All rights reserved.
  * Copyright (c) 2004-2010 Frank Denis. All rights reserved.
  * 
  * This crucial part of UCARP is derived from the OpenBSD project.
@@ -278,8 +278,21 @@ static void carp_send_ad(struct carp_softc *sc)
         eh.ether_shost[0] = 0x00;
         eh.ether_shost[1] = 0x00;
         eh.ether_shost[2] = 0x5e;
+        /*
+         https://www.rfc-editor.org/rfc/rfc7042.html
+         2.1.1.  EUI-48 Assignments under the IANA OUI
+         
+        00-00-5E-00-00-00 through 00-00-5E-00-00-FF: reserved and require
+         IESG Ratification for assignment (see Section 5.1). <-----here, check this line
+
+        00-00-5E-00-01-00 through 00-00-5E-00-01-FF: assigned for the
+         Virtual Router Redundancy Protocol (VRRP) [RFC5798]. <--- maybe use this instead
+
+        00-00-5E-00-02-00 through 00-00-5E-00-02-FF: assigned for the IPv6
+         Virtual Router Redundancy Protocol (IPv6 VRRP) [RFC5798].
+         */
         eh.ether_shost[3] = 0x00;
-        eh.ether_shost[4] = 0x00;
+        eh.ether_shost[4] = 0x01;
         eh.ether_shost[5] = vhid;
     }
     
