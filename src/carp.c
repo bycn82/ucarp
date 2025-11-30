@@ -50,14 +50,18 @@
 # include <dmalloc.h>
 #endif
 
-/* 0 while the interface is down (not RUNNING) and we are waiting */
+/* Interface state: 1 = up (RUNNING); 0 = down, waiting for it to return */
 static int iface_running = 1;
+/* Set during the SIGUSR2 hold; "master" is refused (it would be undone) */
+static int ctrl_holding;
 
+/* Interface state for the control port ("ifrunning" in the state reply) */
 int carp_iface_running(void)
 {
     return iface_running;
 }
 
+/* Name of the current CARP state, for the control port "state" command */
 const char *carp_state_name(void)
 {
     switch (sc.sc_state) {
@@ -271,25 +275,27 @@ static void carp_send_ad(struct carp_softc *sc)
     ch.carp_cksum = htons(sum);    
     
     if (no_spoof) {
-        /* real NIC MAC: needed where forged source MACs are dropped
-         * (VMware "Forged transmits", Hyper-V, port security) */
+        /*
+         * --nospoof: use the real NIC MAC as the advertisement source.
+         * Needed where forged source MACs are dropped: VMware "Forged
+         * transmits", Hyper-V MAC spoofing protection, switch port security.
+         */
         memcpy(eh.ether_shost, hwaddr, sizeof hwaddr);
     } else {
         eh.ether_shost[0] = 0x00;
         eh.ether_shost[1] = 0x00;
         eh.ether_shost[2] = 0x5e;
         /*
-         https://www.rfc-editor.org/rfc/rfc7042.html
-         2.1.1.  EUI-48 Assignments under the IANA OUI
-         
-        00-00-5E-00-00-00 through 00-00-5E-00-00-FF: reserved and require
-         IESG Ratification for assignment (see Section 5.1). <-----here, check this line
-
-        00-00-5E-00-01-00 through 00-00-5E-00-01-FF: assigned for the
-         Virtual Router Redundancy Protocol (VRRP) [RFC5798]. <--- maybe use this instead
-
-        00-00-5E-00-02-00 through 00-00-5E-00-02-FF: assigned for the IPv6
-         Virtual Router Redundancy Protocol (IPv6 VRRP) [RFC5798].
+         * Source MAC 00:00:5e:00:01:<vhid>, per RFC 7042 section 2.1.1
+         * (https://www.rfc-editor.org/rfc/rfc7042.html):
+         *   00-00-5E-00-00-00 .. 00-00-5E-00-00-FF: reserved, assignment
+         *       requires IESG ratification (used by the original code);
+         *   00-00-5E-00-01-00 .. 00-00-5E-00-01-FF: assigned to IPv4 VRRP
+         *       [RFC 5798] (used here);
+         *   00-00-5E-00-02-00 .. 00-00-5E-00-02-FF: assigned to IPv6 VRRP.
+         * Note: a router running real VRRP on the same segment with a VRID
+         * equal to this vhid uses the same MAC. Pick another vhid or use
+         * --nospoof in that case.
          */
         eh.ether_shost[3] = 0x00;
         eh.ether_shost[4] = 0x01;
@@ -307,6 +313,7 @@ static void carp_send_ad(struct carp_softc *sc)
         eh.ether_dhost[0] = 0x01;
         eh.ether_dhost[1] = 0x00;
         eh.ether_dhost[2] = 0x5e;
+        /* multicast MAC = 01:00:5e + low 23 bits of the group (RFC 1112) */
         eh.ether_dhost[3] = inaddr_carp_group[1] & 0x7f;
         eh.ether_dhost[4] = inaddr_carp_group[2];
         eh.ether_dhost[5] = inaddr_carp_group[3];        
@@ -495,6 +502,7 @@ static void packethandler(unsigned char *dummy,
     if (iphead.ip_src.s_addr == srcip.s_addr) {
         return;
     }
+    /* multicast mode: only accept advertisements sent to our group */
     if (!no_mcast && memcmp(&iphead.ip_dst.s_addr, inaddr_carp_group,
                             sizeof iphead.ip_dst.s_addr) != 0) {
         return;
@@ -698,22 +706,35 @@ static void packethandler(unsigned char *dummy,
     }
 }     
 
-/* One-shot role changes; normal election remains active. */
+/*
+ * Control port "master": become MASTER now.
+ * One-shot change, the role is not locked; normal election continues.
+ * Returns CTRL_OK, CTRL_ERR_IFDOWN or CTRL_ERR_HOLD.
+ */
 int carp_control_master(void)
 {
     if (!iface_running) {
-        return -1;      /* would be undone at once by the down handling */
+        return CTRL_ERR_IFDOWN; /* would be undone by the down handling */
+    }
+    if (ctrl_holding) {
+        return CTRL_ERR_HOLD;   /* no adverts during the hold: VIP gap */
     }
     if (sc.sc_state == MASTER) {
         return 0;
     }
     if (sc.sc_state == INIT) {
+        /* carp_master_down() only handles BACKUP -> MASTER */
         carp_set_state(&sc, BACKUP);
     }
     carp_master_down(&sc);
     return 0;
 }
 
+/*
+ * Control port "backup": become BACKUP now and run the downscript.
+ * Not locked either: if no other master advertises, we take over again
+ * when the master-down timer expires.
+ */
 int carp_control_backup(void)
 {
     if (sc.sc_state == BACKUP) {
@@ -721,6 +742,7 @@ int carp_control_backup(void)
     }
     carp_set_state(&sc, BACKUP);
     sc.sc_delayed_arp = 0;
+    /* stop sending MASTER adverts and restart the master-down timer */
     sc.sc_ad_tmo.tv_sec = 0;
     sc.sc_ad_tmo.tv_usec = 0;
     carp_setrun(&sc, 0);
@@ -761,6 +783,7 @@ char *build_bpf_rule(void)
         logfile(LOG_ERR, "inet_ntoa: [%s]", strerror(errno));
         return NULL;
     }
+    /* multicast mode: also match the destination group */
     if (no_mcast) {
         snprintf(rule, sizeof rule, "proto %u and src host not %s",
                  (unsigned int) IPPROTO_CARP, srcip_s);
@@ -785,10 +808,8 @@ int docarp(void)
     char errbuf[PCAP_ERRBUF_SIZE];
     struct ip_mreq req_add;   
     struct bpf_program bpfp;
-    struct pollfd pfds[3];
+    struct pollfd pfds[1 + CTRL_MAX_POLLFDS];   /* [0] pcap, rest: ctrl */
     int npfds;
-    int ctrl_li;
-    int ctrl_ci;
     struct ifreq iface;
     int fd;
     int nfds;
@@ -854,6 +875,7 @@ int docarp(void)
     }
     (void) signal(SIGUSR1, sighandler_usr);
     (void) signal(SIGUSR2, sighandler_usr);
+    /* start the control port (no-op without -c) */
     if (ctrl_init() != 0) {
         return -1;
     }
@@ -871,6 +893,7 @@ int docarp(void)
     }
     if (!no_mcast) {
         memset(&req_add, 0, sizeof req_add);
+        /* join the --mcast group (default 224.0.0.18) */
         memcpy(&req_add.imr_multiaddr.s_addr, inaddr_carp_group,
                sizeof req_add.imr_multiaddr.s_addr);
         req_add.imr_interface.s_addr = srcip.s_addr;
@@ -904,7 +927,7 @@ int docarp(void)
             if (iface_running) {
             iface_running = 0;
         }
-        /* keep answering the control port instead of sleep() */
+        /* was sleep(10): keep answering the control port while waiting */
         ctrl_serve_for(SECONDS_TO_WAIT_AFTER_INTERFACE_IS_DOWN * 1000U);
         continue;
         }
@@ -931,7 +954,11 @@ int docarp(void)
 #endif
         if (sc.sc_state != BACKUP) {
             carp_set_state(&sc, BACKUP);
-            sleep(3); /* hold up a sec... */
+            /* was sleep(3): hold for 3s but keep answering the control
+             * port ("master" is refused meanwhile) */
+            ctrl_holding = 1;
+            ctrl_serve_for(3000U);
+            ctrl_holding = 0;
             carp_setrun(&sc, 0); /* now listen for 3 heartbeats, as usual */
             continue;
         }
@@ -951,21 +978,10 @@ int docarp(void)
             poll_sleep_time = (time_until_advert.tv_sec * 1000) +
                 (time_until_advert.tv_usec / 1000);
         }
-        npfds = 1;
-        ctrl_li = ctrl_ci = -1;
+        /* pfds[0] is pcap; control port fds are appended after it */
         pfds[0].revents = 0;
-        if (ctrl_listen_fd() != -1) {
-            ctrl_li = npfds++;
-            pfds[ctrl_li].fd = ctrl_listen_fd();
-            pfds[ctrl_li].events = POLLIN;
-            pfds[ctrl_li].revents = 0;
-        }
-        if (ctrl_client_fd() != -1) {
-            ctrl_ci = npfds++;
-            pfds[ctrl_ci].fd = ctrl_client_fd();
-            pfds[ctrl_ci].events = POLLIN;
-            pfds[ctrl_ci].revents = 0;
-        }
+        npfds = 1 + ctrl_fill_pollfds(&pfds[1]);
+        /* shorten the wait to the nearest control client deadline */
         poll_sleep_time = ctrl_poll_timeout(poll_sleep_time);
         nfds = poll(pfds, (nfds_t) npfds, MAX(1, poll_sleep_time));
         if (nfds == -1) {
@@ -984,18 +1000,16 @@ int docarp(void)
                     strerror(errno));
             continue;
         }        
+        /* read pcap only if its fd is ready ("nfds == 1" no longer works) */
         if (nfds > 0 && (pfds[0].revents & POLLIN) != 0) {
             pcap_dispatch(dev_desc, 1, packethandler, NULL);
         }
-        if (nfds > 0 && ctrl_ci != -1 &&
-            (pfds[ctrl_ci].revents & (POLLIN | POLLERR | POLLHUP)) != 0) {
-            ctrl_on_readable();
+        /* control port: accept, read commands, write replies, timeouts */
+        if (nfds > 0) {
+            ctrl_handle_pollfds(&pfds[1]);
+        } else {
+            ctrl_check_timeout();
         }
-        if (nfds > 0 && ctrl_li != -1 &&
-            (pfds[ctrl_li].revents & POLLIN) != 0) {
-            ctrl_on_accept();
-        }
-        ctrl_check_timeout();
         if (sc.sc_md_tmo.tv_sec != 0 && timercmp(&now, &sc.sc_md_tmo, >)) {
             carp_master_down(&sc);
         }

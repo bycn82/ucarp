@@ -1,7 +1,7 @@
 #ifndef __CARP_P_H__
 #define __CARP_P_H__ 1
 
-static const char *GETOPT_OPTIONS = "i:s:v:p:Pa:hb:k:x:nu:d:r:zf:Bo:SMFc:m:T:";
+static const char *GETOPT_OPTIONS = "i:s:v:p:Pa:hb:k:x:nu:d:r:zf:Bo:SMFc:m:T:K:";
 
 static struct option long_options[] = {
     { "interface", 1, NULL, 'i' },
@@ -22,12 +22,13 @@ static struct option long_options[] = {
     { "daemonize", 0, NULL, 'B' },
     { "ignoreifstate", 0, NULL, 'S' },
     { "nomcast", 0, NULL, 'M' },
-    { "nospoof", 0, NULL, 'F' },
-    { "mcast", 1, NULL, 'm' },
-    { "scripttimeout", 1, NULL, 'T' },
+    { "nospoof", 0, NULL, 'F' },          /* new: real MAC in adverts */
+    { "mcast", 1, NULL, 'm' },            /* new: multicast group */
+    { "scripttimeout", 1, NULL, 'T' },    /* new: script timeout */
     { "passfile", 1, NULL, 'o' },
     { "xparam", 1, NULL, 'x' },
-    { "ctrlport", 1, NULL, 'c' },
+    { "ctrlport", 1, NULL, 'c' },         /* new: control port */
+    { "ctrlkeyfile", 1, NULL, 'K' },      /* new: control key file */
     { NULL, 0, NULL, 0 }
 };
 

@@ -11,6 +11,7 @@
 #ifdef HAVE_SETLOCALE
 # include <locale.h>
 #endif
+#include <sys/stat.h>
 #include "log.h"
 #include "daemonize.h"
 #include "ucarp_p.h"
@@ -48,12 +49,15 @@ static void usage(void)
         "--nospoof (-F): use the real interface MAC as source of advertisements\n"
         "--facility=<facility> (-f): set syslog facility (default=daemon)\n"
         "--xparam=<value> (-x): extra parameter to send to up/down scripts\n"
-        "--ctrlport=<port> (-c <port>): control port on TCP 127.0.0.1 (cmd: state/master/backup)\n"       
+        "--ctrlport=<port> (-c <port>): control port on TCP 127.0.0.1\n"
+        "    commands: state | master <key> | backup <key>\n"
+        "--ctrlkeyfile=<file> (-K <file>): key for master/backup (first line;\n"
+        "    without it master/backup are disabled)\n"
         "\n"
         "Example:\n"
         "\n"
         "ucarp --interface=eth0 --srcip=10.1.1.1 --vhid=1 --pass=mypassword \\\n"
-        "      --addr=10.1.1.252 --ctrlport=9000 \\\n"
+        "      --addr=10.1.1.252 --ctrlport=9000 --ctrlkeyfile=/etc/ucarp.key \\\n"
         "      --upscript=/etc/vip-up.sh --downscript=/etc/vip-down.sh\n"
         "\n\n"    
         "Please report bugs to "), stdout);
@@ -236,7 +240,7 @@ int main(int argc, char *argv[])
             }
             break;
         }
-        case 'm': {
+        case 'm': {             /* --mcast: custom CARP multicast group */
             struct in_addr group;
             unsigned long host;
 
@@ -249,11 +253,45 @@ int main(int argc, char *argv[])
                 logfile(LOG_ERR, _("Not an IPv4 multicast address: [%s]"), optarg);
                 return 1;
             }
+            /*
+             * Refuse reserved ranges:
+             *   224.0.0.0/24: local network control (OSPF, all-hosts, ...),
+             *                 except 224.0.0.18 (VRRP, the default);
+             *   224.0.1.0/24: internetwork control (NTP, ...);
+             *   232.0.0.0/8 : source-specific multicast (needs IGMPv3
+             *                 source joins).
+             */
+            if (((host & 0xffffff00UL) == 0xe0000000UL &&
+                 host != 0xe0000012UL) ||
+                (host & 0xffffff00UL) == 0xe0000100UL ||
+                (host & 0xff000000UL) == 0xe8000000UL) {
+                logfile(LOG_ERR, _("Reserved multicast address: [%s] "
+                                   "(use 239.192.0.0/14)"), optarg);
+                return 1;
+            }
+            /*
+             * The multicast MAC only uses the low 23 bits: x.0.0.y and
+             * x.128.0.y share 01:00:5e:00:00:yy with 224.0.0.y, so IGMP
+             * snooping switches flood them to all ports. Warn only.
+             * Also warn for groups outside 239.192.0.0/14
+             * (organization-local scope).
+             */
+            if (host != 0xe0000012UL && (host & 0x007fff00UL) == 0UL) {
+                logfile(LOG_WARNING, _("Multicast address [%s] maps to the "
+                                       "same MAC as 224.0.0.%lu: it will be "
+                                       "flooded to all ports"),
+                        optarg, host & 0xffUL);
+            } else if (host != 0xe0000012UL &&
+                       (host & 0xfffc0000UL) != 0xefc00000UL) {
+                logfile(LOG_WARNING, _("Multicast address [%s] is outside "
+                                       "239.192.0.0/14 (organization-local "
+                                       "scope)"), optarg);
+            }
             memcpy(inaddr_carp_group, &group.s_addr, sizeof group.s_addr);
             mcast_set = 1;
             break;
         }
-        case 'T': {
+        case 'T': {             /* --scripttimeout: seconds, 0 = no limit */
             char *end;
             unsigned long t = strtoul(optarg, &end, 10);
 
@@ -265,7 +303,7 @@ int main(int argc, char *argv[])
             script_timeout_set = 1;
             break;
         }
-        case 'F': {
+        case 'F': {             /* --nospoof: real NIC MAC in adverts */
             no_spoof = 1;
             break;
         }
@@ -273,7 +311,7 @@ int main(int argc, char *argv[])
             no_mcast = 1;
             break;
         }
-        case 'c': {
+        case 'c': {             /* --ctrlport: TCP port on 127.0.0.1 */
             char *end;
             unsigned long p = strtoul(optarg, &end, 10);
 
@@ -282,6 +320,47 @@ int main(int argc, char *argv[])
                 return 1;
             }
             ctrl_port = (unsigned int) p;
+            break;
+        }
+        case 'K': {             /* --ctrlkeyfile: key for master/backup */
+            char buf[256];
+            char *p;
+            FILE *kf;
+            struct stat st;
+
+            if ((kf = fopen(optarg, "r")) == NULL) {
+                logfile(LOG_ERR, _("Unable to open key file %s: %s"),
+                        optarg, strerror(errno));
+                return 1;
+            }
+            /* warn if group/others can access the key file */
+            if (fstat(fileno(kf), &st) == 0 &&
+                (st.st_mode & (S_IRWXG | S_IRWXO)) != 0) {
+                logfile(LOG_WARNING, _("Key file %s is accessible by group/"
+                                       "others: chmod 600 it"), optarg);
+            }
+            if (fgets(buf, sizeof buf, kf) == NULL) {
+                logfile(LOG_ERR, _("Unable to read key file %s"), optarg);
+                fclose(kf);
+                return 1;
+            }
+            fclose(kf);
+            /* first line only, newline stripped; at least 8 characters,
+             * no whitespace (the key is sent after the command word) */
+            if ((p = strpbrk(buf, "\r\n")) != NULL) {
+                *p = 0;
+            }
+            if (strlen(buf) < 8U || strchr(buf, ' ') != NULL ||
+                strchr(buf, '\t') != NULL) {
+                logfile(LOG_ERR, _("Key in %s must be at least 8 characters "
+                                   "without spaces"), optarg);
+                return 1;
+            }
+            free(ctrl_key);
+            if ((ctrl_key = strdup(buf)) == NULL) {
+                die_mem();
+            }
+            memset(buf, 0, sizeof buf);     /* wipe the copy on the stack */
             break;
         }
         default: {
@@ -311,7 +390,8 @@ int main(int argc, char *argv[])
         return 1;
     }
     if (script_timeout_set == 0) {
-        /* must finish before the peer declares us dead */
+        /* default advbase*deadratio-1 (min 1s): kill a stuck script
+         * before the peer declares us dead */
         unsigned int dead = (unsigned int) advbase * dead_ratio;
 
         script_timeout = dead > 1U ? dead - 1U : 1U;
@@ -321,6 +401,12 @@ int main(int argc, char *argv[])
                                "a stuck script can still cause a split brain"),
                 script_timeout, (unsigned int) advbase * dead_ratio);
     }
+    /* a key file is useless without the control port */
+    if (ctrl_key != NULL && ctrl_port == 0U) {
+        logfile(LOG_WARNING, _("--ctrlkeyfile given without --ctrlport: "
+                               "ignored"));
+    }
+    /* --mcast and --nomcast (broadcast) are mutually exclusive */
     if (mcast_set && no_mcast) {
         logfile(LOG_ERR, _("--mcast and --nomcast cannot be used together"));
         return 1;

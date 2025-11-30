@@ -13,6 +13,7 @@
 /* grace period between SIGTERM and SIGKILL after a timeout */
 #define SCRIPT_KILL_GRACE_MS 500
 
+/* milliseconds elapsed since <start> */
 static long ms_since(const struct timeval * const start)
 {
     struct timeval tv, d;
@@ -28,6 +29,8 @@ static long ms_since(const struct timeval * const start)
 /*
  * Wait for <pid> for at most <limit_ms> milliseconds (<= 0: forever).
  * Returns 1 when the child has been reaped, 0 on timeout.
+ * Polls with WNOHANG every 20ms, so no SIGCHLD/SIGALRM handling is
+ * needed; works the same on FreeBSD and Linux.
  */
 static int wait_child(const pid_t pid, const long limit_ms, int *status)
 {
@@ -51,6 +54,12 @@ static int wait_child(const pid_t pid, const long limit_ms, int *status)
     }
 }
 
+/*
+ * Run an up/down script and wait for it.
+ * If it doesn't finish within script_timeout (-T) seconds, its whole
+ * process group is killed and -1 is returned, so a stuck script can't
+ * stop ucarp from advertising.
+ */
 int spawn_handler(const int dev_desc_fd, const char * const script)
 {
     pid_t pid;
@@ -108,7 +117,7 @@ int spawn_handler(const int dev_desc_fd, const char * const script)
         return 0;
     }
 
-    /* timed out */
+    /* timed out: SIGTERM the process group, SIGKILL after the grace period */
     logfile(LOG_ERR, _("Script [%s] did not finish within %u second(s): "
                        "killing it (process group %ld)"),
             script, script_timeout, (long) pid);

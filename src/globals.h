@@ -27,12 +27,13 @@ GLOBAL0(signed char no_syslog);
 GLOBAL0(signed char daemonize);
 GLOBAL0(signed char ignoreifstate);
 GLOBAL0(signed char no_mcast);
-GLOBAL0(signed char no_spoof);
+GLOBAL0(signed char no_spoof);          /* -F: real NIC MAC in adverts */
 GLOBAL(int syslog_facility, DEFAULT_FACILITY);
 GLOBAL0(char *vaddr_arg);
 GLOBAL0(char *xparam);
 GLOBAL(unsigned char inaddr_carp_group[4], { 224 _COMA_ 0 _COMA_ 0 _COMA_ 18 });
 GLOBAL0(sig_atomic_t received_signal);
-GLOBAL0(unsigned int ctrl_port);
-GLOBAL0(unsigned int script_timeout);
+GLOBAL0(unsigned int ctrl_port);        /* -c: control port, 0 = off */
+GLOBAL0(unsigned int script_timeout);   /* -T: seconds, 0 = no limit */
+GLOBAL0(char *ctrl_key);                /* -K: key, NULL = master/backup off */
 #endif
