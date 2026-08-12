@@ -37,6 +37,25 @@
  * master/backup need the key read from -K/--ctrlkeyfile; without a key
  * file they are disabled. "state" needs no key.
  *
+ * The state reply also carries:
+ *   started/now/since  process start, current time, last transition
+ *                      (Unix time, seconds)
+ *   peer               last host that sent us a valid advertisement
+ *                      (ip, advbase, advskew, age_ms), or null
+ *   stats              advertisement and error counters
+ *   history            last CARP_HIST_MAX transitions, newest first:
+ *                      time, from, to, reason, peer
+ * Transition reasons:
+ *   startup               INIT -> BACKUP when ucarp starts
+ *   master_down_timeout   no advertisement for advbase*deadratio
+ *   master_will_time_out  master advertises slower than our dead time
+ *   preempt               -P and the master advertises slower than us
+ *   preferred_master      we were MASTER and a better master appeared
+ *   interface_down        interface lost RUNNING
+ *   sigusr2               SIGUSR2 received
+ *   ctrl_master           "master" command
+ *   ctrl_backup           "backup" command
+ *
  * Up to CTRL_MAX_CLIENTS clients are served at once; further connections
  * wait in the listen backlog. A client has 1 second to send its line and
  * 1 second to read the reply.
@@ -264,6 +283,98 @@ static void out_kbool(struct out * const o, const char *k, const int v)
     out_raw(o, v ? "true" : "false");
 }
 
+/* "key": "a.b.c.d", or null for 0.0.0.0 */
+static void out_kip(struct out * const o, const char *k,
+                    const struct in_addr * const a, const int first)
+{
+    char ip[INET_ADDRSTRLEN];
+
+    out_key(o, k, first);
+    if (a->s_addr == 0U || inet_ntop(AF_INET, a, ip, sizeof ip) == NULL) {
+        out_raw(o, "null");
+    } else {
+        out_str(o, ip);
+    }
+}
+
+/* "peer", "stats" and "history" objects of the state reply */
+static void build_history(struct out * const o)
+{
+    const struct carp_stats * const st = carp_get_stats();
+    const struct carp_transition *t;
+    struct timeval tv;
+    long age;
+    time_t since;
+    int i, n;
+
+    n = carp_history_count();
+    t = carp_history_get(0);
+    since = t != NULL ? t->when : st->started;
+    out_kuint(o, "started", (unsigned long) st->started);
+    out_kuint(o, "now", (unsigned long) time(NULL));
+    out_kuint(o, "since", (unsigned long) since);
+
+    out_key(o, "peer", 0);
+    if (!st->peer_valid) {
+        out_raw(o, "null");
+    } else {
+        (void) gettimeofday(&tv, NULL);
+        age = (long) (tv.tv_sec - st->peer_last.tv_sec) * 1000L +
+              (long) (tv.tv_usec - st->peer_last.tv_usec) / 1000L;
+        out_raw(o, "{");
+        out_kip(o, "ip", &st->peer, 1);
+        out_kuint(o, "advbase", (unsigned long) st->peer_advbase);
+        out_kuint(o, "advskew", (unsigned long) st->peer_advskew);
+        out_kuint(o, "age_ms", (unsigned long) (age < 0L ? 0L : age));
+        out_raw(o, "}");
+    }
+
+    out_key(o, "stats", 0);
+    out_raw(o, "{");
+    out_key(o, "transitions", 1);
+    {
+        char tmp[32];
+
+        snprintf(tmp, sizeof tmp, "%lu", st->transitions);
+        out_raw(o, tmp);
+    }
+    out_kuint(o, "adv_sent", st->adv_sent);
+    out_kuint(o, "adv_send_errors", st->adv_send_errors);
+    out_kuint(o, "adv_recv", st->adv_recv);
+    out_kuint(o, "bad_ttl", st->bad_ttl);
+    out_kuint(o, "bad_version", st->bad_version);
+    out_kuint(o, "bad_cksum", st->bad_cksum);
+    out_kuint(o, "bad_auth", st->bad_auth);
+    out_kip(o, "last_bad_auth_src", &st->last_bad_auth_src, 0);
+    out_kuint(o, "last_bad_auth_time",
+              (unsigned long) st->last_bad_auth_time);
+    out_kuint(o, "other_vhid", st->other_vhid);
+    out_raw(o, "}");
+
+    out_key(o, "history", 0);
+    out_raw(o, "[");
+    for (i = 0; i < n; i++) {
+        t = carp_history_get(i);
+        if (i > 0) {
+            out_raw(o, ",");
+        }
+        out_raw(o, "{");
+        out_key(o, "time", 1);
+        {
+            char tmp[32];
+
+            snprintf(tmp, sizeof tmp, "%lu", (unsigned long) t->when);
+            out_raw(o, tmp);
+        }
+        out_kstr(o, "from", carp_state_str(t->from));
+        out_kstr(o, "to", carp_state_str(t->to));
+        out_kstr(o, "reason", t->reason);
+        out_kip(o, "peer", &t->peer, 0);
+        out_raw(o, "}");
+    }
+    out_raw(o, "]");
+}
+
 /* JSON reply of "state": a single line ending with a newline */
 static void build_state(struct out * const o)
 {
@@ -307,6 +418,7 @@ static void build_state(struct out * const o)
     out_kuint(o, "ctrlport", (unsigned long) ctrl_port);
     out_kbool(o, "ctrlauth", ctrl_key != NULL);
     out_kuint(o, "pid", (unsigned long) getpid());
+    build_history(o);
     out_raw(o, "}\n");
 }
 

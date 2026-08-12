@@ -61,10 +61,28 @@ int carp_iface_running(void)
     return iface_running;
 }
 
-/* Name of the current CARP state, for the control port "state" command */
-const char *carp_state_name(void)
+/* ---- state history and statistics (reported by the control port) ---- */
+
+static struct carp_stats cstats;
+static struct carp_transition hist[CARP_HIST_MAX];
+static int hist_head;           /* next slot to write */
+static int hist_n;              /* valid entries */
+
+/*
+ * Why the next carp_set_state() happens, and which advertiser caused it.
+ * Every caller of carp_set_state() / carp_master_down() sets this first.
+ */
+static const char *transition_reason = "startup";
+static struct in_addr transition_peer;
+
+#define CARP_REASON(R, PEER) do {                \
+        transition_reason = (R);                 \
+        transition_peer.s_addr = (PEER);         \
+    } while (0)
+
+const char *carp_state_str(const int state)
 {
-    switch (sc.sc_state) {
+    switch (state) {
     case INIT:
         return "INIT";
     case BACKUP:
@@ -75,11 +93,54 @@ const char *carp_state_name(void)
     return "UNKNOWN";
 }
 
+/* Name of the current CARP state, for the control port "state" command */
+const char *carp_state_name(void)
+{
+    return carp_state_str((int) sc.sc_state);
+}
+
+const struct carp_stats *carp_get_stats(void)
+{
+    return &cstats;
+}
+
+int carp_history_count(void)
+{
+    return hist_n;
+}
+
+/* i = 0 is the newest transition */
+const struct carp_transition *carp_history_get(const int i)
+{
+    if (i < 0 || i >= hist_n) {
+        return NULL;
+    }
+    return &hist[(hist_head - 1 - i + 2 * CARP_HIST_MAX) % CARP_HIST_MAX];
+}
+
+static void record_transition(const int from, const int to)
+{
+    struct carp_transition * const t = &hist[hist_head];
+
+    t->when = time(NULL);
+    t->from = from;
+    t->to = to;
+    t->reason = transition_reason != NULL ? transition_reason : "unknown";
+    t->peer = transition_peer;
+    hist_head = (hist_head + 1) % CARP_HIST_MAX;
+    if (hist_n < CARP_HIST_MAX) {
+        hist_n++;
+    }
+    cstats.transitions++;
+}
+
 static void carp_set_state(struct carp_softc *sc, int state)
 {
     if ((int) sc->sc_state == state) {
         return;
     }
+    /* recorded before the scripts run: the time is when we decided */
+    record_transition((int) sc->sc_state, state);
     switch (state) {
     case INIT:
         logfile(LOG_INFO, _("Switching to state: INIT"));
@@ -333,6 +394,7 @@ static void carp_send_ad(struct carp_softc *sc)
         rc = write(dev_desc_fd, pkt, eth_len);
     } while (rc < 0 && errno == EINTR);
     if (rc < 0) {
+        cstats.adv_send_errors++;
         logfile(LOG_WARNING, _("write() has failed: %s"), strerror(errno));
         if (sc->sc_sendad_errors < INT_MAX) {
             sc->sc_sendad_errors++;
@@ -349,6 +411,7 @@ static void carp_send_ad(struct carp_softc *sc)
         }
         sc->sc_sendad_success = 0;
     } else {
+        cstats.adv_sent++;
         if (sc->sc_sendad_errors >= CARP_SENDAD_MAX_ERRORS) {
             if (++sc->sc_sendad_success >= CARP_SENDAD_MIN_SUCCESS) {
                 carp_suppress_preempt--;
@@ -397,6 +460,7 @@ static void carp_setrun(struct carp_softc *sc, sa_family_t af)
     }
     switch (sc->sc_state) {
     case INIT:
+        CARP_REASON("startup", 0U);
         carp_set_state(sc, BACKUP);
         carp_setrun(sc, 0);         
         break;
@@ -553,16 +617,19 @@ static void packethandler(unsigned char *dummy,
                 (unsigned long) ch.carp_counter[1]);
 #endif
         if (iphead.ip_ttl != CARP_DFLTTL) {
+            cstats.bad_ttl++;
             logfile(LOG_WARNING, _("Bad TTL: [%u]"),                    
                     (unsigned int) iphead.ip_ttl);
             return;
         }        
         if (ch.carp_version != CARP_VERSION) {
+            cstats.bad_version++;
             logfile(LOG_WARNING, _("Bad version: [%u]"),
                     (unsigned int) ch.carp_version);
             return;
         }
         if (ch.carp_vhid != vhid) {
+            cstats.other_vhid++;
 #ifdef DEBUG
             logfile(LOG_NOTICE, _("Ignoring vhid: [%u]"),
                     (unsigned int) ch.carp_vhid);
@@ -570,6 +637,7 @@ static void packethandler(unsigned char *dummy,
             return;            
         }
         if (cksum(sp, ip_len + sizeof ch) != 0) {
+            cstats.bad_cksum++;
             logfile(LOG_WARNING, _("Bad IP checksum"));
             return;
         }        
@@ -592,6 +660,9 @@ static void packethandler(unsigned char *dummy,
                 abort();
             }
             if (memcmp(md2, ch.carp_md, sizeof md2) != 0) {
+                cstats.bad_auth++;
+                cstats.last_bad_auth_src = iphead.ip_src;
+                cstats.last_bad_auth_time = time(NULL);
                 logfile(LOG_WARNING,
                         _("Bad digest - "
                           "md2=[%02x%02x%02x%02x...] md=[%02x%02x%02x%02x...] - "
@@ -605,6 +676,14 @@ static void packethandler(unsigned char *dummy,
                 return;
             }
         }
+        /* authenticated advertisement: remember who sent it */
+        cstats.adv_recv++;
+        cstats.peer_valid = 1;
+        cstats.peer = iphead.ip_src;
+        cstats.peer_advbase = (unsigned int) ch.carp_advbase;
+        cstats.peer_advskew = (unsigned int) ch.carp_advskew;
+        (void) gettimeofday(&cstats.peer_last, NULL);
+
         tmp_counter = ntohl(ch.carp_counter[0]);
         tmp_counter = tmp_counter << 32;
         tmp_counter += ntohl(ch.carp_counter[1]);
@@ -647,6 +726,7 @@ static void packethandler(unsigned char *dummy,
          * has to reassert control of the VIP */
         carp_send_ad(&sc);
         
+                CARP_REASON("preferred_master", iphead.ip_src.s_addr);
                 carp_set_state(&sc, BACKUP);
                 carp_setrun(&sc, 0);
                 logfile(LOG_WARNING, _("Preferred master advertised: "
@@ -674,6 +754,7 @@ static void packethandler(unsigned char *dummy,
              * and this one claims to be slower, treat him as down.
              */
             if (preempt != 0 && timercmp(&sc_tv, &ch_tv, <)) {
+                CARP_REASON("preempt", iphead.ip_src.s_addr);
                 carp_master_down(&sc);
                 logfile(LOG_WARNING, _("Putting MASTER down - preemption"));
                 break;
@@ -686,6 +767,7 @@ static void packethandler(unsigned char *dummy,
              */
             sc_tv.tv_sec = (unsigned int) sc.sc_advbase * dead_ratio;
             if (timercmp(&sc_tv, &ch_tv, <)) {
+                CARP_REASON("master_will_time_out", iphead.ip_src.s_addr);
                 carp_master_down(&sc);
                 logfile(LOG_WARNING, 
                         _("Putting MASTER DOWN (going to time out)"));
@@ -722,6 +804,7 @@ int carp_control_master(void)
     if (sc.sc_state == MASTER) {
         return 0;
     }
+    CARP_REASON("ctrl_master", 0U);
     if (sc.sc_state == INIT) {
         /* carp_master_down() only handles BACKUP -> MASTER */
         carp_set_state(&sc, BACKUP);
@@ -740,6 +823,7 @@ int carp_control_backup(void)
     if (sc.sc_state == BACKUP) {
         return 0;
     }
+    CARP_REASON("ctrl_backup", 0U);
     carp_set_state(&sc, BACKUP);
     sc.sc_delayed_arp = 0;
     /* stop sending MASTER adverts and restart the master-down timer */
@@ -824,6 +908,7 @@ int docarp(void)
 #ifdef INET6
     sc.sc_im6o.im6o_multicast_hlim = CARP_DFLTTL;
 #endif /* INET6 */
+    cstats.started = time(NULL);
     carp_set_state(&sc, INIT);
     {
         const size_t passlen = strlen(pass) + (size_t) 1U;
@@ -919,6 +1004,7 @@ int docarp(void)
         }
         if ((iface.ifr_flags & IFF_RUNNING) == 0) {
         if (ignoreifstate == 0) {
+        CARP_REASON("interface_down", 0U);
         carp_set_state(&sc, BACKUP);
         sc.sc_ad_tmo.tv_sec = 0;
         sc.sc_ad_tmo.tv_usec = 0;
@@ -953,6 +1039,7 @@ int docarp(void)
         logfile(LOG_DEBUG, "Caught signal (USR2) considering going down");
 #endif
         if (sc.sc_state != BACKUP) {
+            CARP_REASON("sigusr2", 0U);
             carp_set_state(&sc, BACKUP);
             /* was sleep(3): hold for 3s but keep answering the control
              * port ("master" is refused meanwhile) */
@@ -1011,10 +1098,15 @@ int docarp(void)
             ctrl_check_timeout();
         }
         if (sc.sc_md_tmo.tv_sec != 0 && timercmp(&now, &sc.sc_md_tmo, >)) {
+            /* peer = the master we last heard from (none at startup) */
+            CARP_REASON("master_down_timeout",
+                        cstats.peer_valid ? cstats.peer.s_addr : 0U);
             carp_master_down(&sc);
         }
 #ifdef INET6
         if (sc.sc_md6_tmo.tv_sec != 0 && timercmp(&now, &sc.sc_md6_tmo, >)) {
+            CARP_REASON("master_down_timeout",
+                        cstats.peer_valid ? cstats.peer.s_addr : 0U);
             carp_master_down(&sc);
         }
 #endif
