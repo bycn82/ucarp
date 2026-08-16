@@ -10,6 +10,7 @@
 #define CTRL_OK          0     /* success */
 #define CTRL_ERR_IFDOWN (-1)   /* interface down: master refused */
 #define CTRL_ERR_HOLD   (-2)   /* SIGUSR2 hold: master refused */
+#define CTRL_ERR_MAINT  (-3)   /* maintenance mode: master refused */
 
 /* ---- state history and statistics, kept by carp.c ---- */
 
@@ -49,6 +50,9 @@ struct carp_stats {
 const char *carp_state_str(int state);
 const struct carp_stats *carp_get_stats(void);
 int carp_history_count(void);
+int carp_control_maint(int on);
+int carp_maint(void);                   /* 1 = maintenance mode on */
+time_t carp_maint_since(void);          /* when it was switched on, 0 = off */
 const struct carp_transition *carp_history_get(int i);  /* 0 = newest */
 const char *carp_state_name(void);
 int  carp_control_master(void);

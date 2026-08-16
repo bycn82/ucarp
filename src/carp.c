@@ -54,6 +54,12 @@
 static int iface_running = 1;
 /* Set during the SIGUSR2 hold; "master" is refused (it would be undone) */
 static int ctrl_holding;
+/*
+ * Maintenance mode ("maint on"): stay BACKUP and never take over, until
+ * "maint off". Not persistent: a restarted ucarp starts with it off.
+ */
+static int maint_mode;
+static time_t maint_since;
 
 /* Interface state for the control port ("ifrunning" in the state reply) */
 int carp_iface_running(void)
@@ -513,6 +519,17 @@ static void carp_master_down(struct carp_softc *sc)
     case MASTER:
         break;
     case BACKUP:
+        if (maint_mode) {
+            /*
+             * Maintenance mode: never take over. This is the only path
+             * from BACKUP to MASTER (timeout, preemption, "master").
+             * Disarm the master-down timer so it doesn't fire again;
+             * "maint off" or the next advertisement re-arms it.
+             */
+            sc->sc_md_tmo.tv_sec = 0;
+            sc->sc_md_tmo.tv_usec = 0;
+            break;
+        }
         carp_set_state(sc, MASTER);
         carp_send_ad(sc);
         /* Schedule a delayed ARP request to deal w/ some L3 switches */
@@ -791,10 +808,13 @@ static void packethandler(unsigned char *dummy,
 /*
  * Control port "master": become MASTER now.
  * One-shot change, the role is not locked; normal election continues.
- * Returns CTRL_OK, CTRL_ERR_IFDOWN or CTRL_ERR_HOLD.
+ * Returns CTRL_OK, CTRL_ERR_IFDOWN, CTRL_ERR_HOLD or CTRL_ERR_MAINT.
  */
 int carp_control_master(void)
 {
+    if (maint_mode) {
+        return CTRL_ERR_MAINT;  /* "maint off" first */
+    }
     if (!iface_running) {
         return CTRL_ERR_IFDOWN; /* would be undone by the down handling */
     }
@@ -816,7 +836,7 @@ int carp_control_master(void)
 /*
  * Control port "backup": become BACKUP now and run the downscript.
  * Not locked either: if no other master advertises, we take over again
- * when the master-down timer expires.
+ * when the master-down timer expires. Use "maint on" to stay BACKUP.
  */
 int carp_control_backup(void)
 {
@@ -831,6 +851,56 @@ int carp_control_backup(void)
     sc.sc_ad_tmo.tv_usec = 0;
     carp_setrun(&sc, 0);
     return 0;
+}
+
+/*
+ * Control port "maint on" / "maint off".
+ * on : become BACKUP now (downscript runs if we were MASTER) and refuse
+ *      every promotion until switched off. We keep listening, so the
+ *      state reply still shows the current master as peer.
+ * off: resume normal election; with no master around we take over after
+ *      advbase*deadratio, as after startup.
+ */
+int carp_control_maint(const int on)
+{
+    if (on) {
+        if (maint_mode) {
+            return CTRL_OK;
+        }
+        maint_mode = 1;
+        maint_since = time(NULL);
+        logfile(LOG_WARNING, _("Maintenance mode on: staying BACKUP"));
+        if (sc.sc_state != BACKUP) {
+            CARP_REASON("maint_on", 0U);
+            carp_set_state(&sc, BACKUP);
+            sc.sc_delayed_arp = 0;
+            sc.sc_ad_tmo.tv_sec = 0;
+            sc.sc_ad_tmo.tv_usec = 0;
+        }
+        sc.sc_md_tmo.tv_sec = 0;
+        sc.sc_md_tmo.tv_usec = 0;
+        return CTRL_OK;
+    }
+    if (!maint_mode) {
+        return CTRL_OK;
+    }
+    maint_mode = 0;
+    maint_since = 0;
+    logfile(LOG_WARNING, _("Maintenance mode off: resuming election"));
+    if (iface_running && !ctrl_holding) {
+        carp_setrun(&sc, 0);    /* re-arm the master-down timer */
+    }
+    return CTRL_OK;
+}
+
+int carp_maint(void)
+{
+    return maint_mode;
+}
+
+time_t carp_maint_since(void)
+{
+    return maint_since;
 }
 
 RETSIGTYPE sighandler_exit(const int sig)

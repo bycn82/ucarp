@@ -33,8 +33,10 @@
  *   state          -> current state and configuration
  *   master <key>   -> promote, then return state
  *   backup <key>   -> demote, then return state
+ *   maint on <key> -> maintenance mode: become BACKUP and stay BACKUP
+ *   maint off <key>-> leave maintenance mode, resume normal election
  *
- * master/backup need the key read from -K/--ctrlkeyfile; without a key
+ * master/backup/maint need the key read from -K/--ctrlkeyfile; without a key
  * file they are disabled. "state" needs no key.
  *
  * The state reply also carries:
@@ -55,6 +57,7 @@
  *   sigusr2               SIGUSR2 received
  *   ctrl_master           "master" command
  *   ctrl_backup           "backup" command
+ *   maint_on              "maint on" while MASTER
  *
  * Up to CTRL_MAX_CLIENTS clients are served at once; further connections
  * wait in the listen backlog. A client has 1 second to send its line and
@@ -399,6 +402,8 @@ static void build_state(struct out * const o)
     out_kbool(o, "shutdown", shutdown_at_exit != 0);
     out_kbool(o, "ignoreifstate", ignoreifstate != 0);
     out_kbool(o, "ifrunning", carp_iface_running() != 0);
+    out_kbool(o, "maint", carp_maint() != 0);
+    out_kuint(o, "maint_since", (unsigned long) carp_maint_since());
     if (inet_ntop(AF_INET, inaddr_carp_group, ip, sizeof ip) == NULL) {
         ip[0] = 0;
     }
@@ -504,53 +509,86 @@ static int key_ok(const char *given)
     return diff == 0U;
 }
 
-/* parse and run one command line: "<command> [<key>]" */
+/* cut the next blank-separated word off *pp; "" when none is left */
+static char *next_word(char **pp)
+{
+    char *w = *pp, *p;
+
+    while (*w == ' ' || *w == '\t') {
+        w++;
+    }
+    p = w;
+    while (*p != 0 && *p != ' ' && *p != '\t') {
+        p++;
+    }
+    if (*p != 0) {
+        *p++ = 0;
+    }
+    *pp = p;
+    return w;
+}
+
+/* parse and run one command line: "<command> [<sub>] [<key>]" */
 static void process_line(struct client * const c)
 {
     struct out o;
-    char *cmd = c->in;
-    char *arg;
-    char *e;
-    int rc;
+    char *p = c->in;
+    char *cmd, *sub = NULL, *arg, *e;
+    int rc, maint_on = 0;
 
     c->in[c->in_len] = 0;
-    while (*cmd == ' ' || *cmd == '\t') {
-        cmd++;
-    }
-    e = cmd + strlen(cmd);
-    while (e > cmd && (e[-1] == '\n' || e[-1] == '\r' ||
-                       e[-1] == ' ' || e[-1] == '\t')) {
+    e = p + strlen(p);
+    while (e > p && (e[-1] == '\n' || e[-1] == '\r' ||
+                     e[-1] == ' ' || e[-1] == '\t')) {
         *--e = 0;
     }
-    arg = cmd;
-    while (*arg != 0 && *arg != ' ' && *arg != '\t') {
-        arg++;
-    }
-    if (*arg != 0) {
-        *arg++ = 0;
-        while (*arg == ' ' || *arg == '\t') {
-            arg++;
+    cmd = next_word(&p);
+    if (strcmp(cmd, "maint") == 0) {
+        sub = next_word(&p);
+        if (strcmp(sub, "on") == 0) {
+            maint_on = 1;
+        } else if (strcmp(sub, "off") != 0) {
+            client_reply_str(c, "{\"error\":\"usage: maint on|off <key>\"}\n");
+            return;
         }
     }
+    arg = next_word(&p);
+    if (*p != 0 && *next_word(&p) != 0) {
+        client_reply_str(c, "{\"error\":\"too many arguments\"}\n");
+        return;
+    }
 
-    if (strcmp(cmd, "master") == 0 || strcmp(cmd, "backup") == 0) {
-        /* no key file: master/backup are disabled */
+    if (strcmp(cmd, "master") == 0 || strcmp(cmd, "backup") == 0 ||
+        sub != NULL) {
+        /* no key file: master/backup/maint are disabled */
         if (ctrl_key == NULL) {
-            client_reply_str(c, "{\"error\":\"master/backup disabled: "
+            client_reply_str(c, "{\"error\":\"master/backup/maint disabled: "
                              "start ucarp with --ctrlkeyfile\"}\n");
             return;
         }
         /* missing or wrong key: refuse and log */
         if (*arg == 0 || !key_ok(arg)) {
-            logfile(LOG_WARNING, _("ctrl: '%s' refused: bad or missing key"),
-                    cmd);
+            logfile(LOG_WARNING, _("ctrl: '%s%s%s' refused: bad or missing key"),
+                    cmd, sub != NULL ? " " : "", sub != NULL ? sub : "");
             client_reply_str(c, "{\"error\":\"authentication failed\"}\n");
             return;
         }
-        logfile(LOG_WARNING, _("ctrl: '%s' requested"), cmd);
-        rc = (cmd[0] == 'm') ? carp_control_master() : carp_control_backup();
+        logfile(LOG_WARNING, _("ctrl: '%s%s%s' requested"),
+                cmd, sub != NULL ? " " : "", sub != NULL ? sub : "");
+        if (sub != NULL) {
+            rc = carp_control_maint(maint_on);
+        } else if (cmd[0] == 'm') {
+            rc = carp_control_master();
+        } else {
+            rc = carp_control_backup();
+        }
         if (rc == CTRL_ERR_IFDOWN) {
             client_reply_str(c, "{\"error\":\"interface down\"}\n");
+            return;
+        }
+        if (rc == CTRL_ERR_MAINT) {
+            client_reply_str(c, "{\"error\":\"maintenance mode: "
+                             "run 'maint off' first\"}\n");
             return;
         }
         if (rc == CTRL_ERR_HOLD) {
