@@ -806,6 +806,10 @@ void ctrl_serve_for(unsigned int ms)
         end.tv_usec -= 1000000;
     }
     for (;;) {
+        /* exit requested: return so the main loop can shut down */
+        if (carp_exit_pending()) {
+            return;
+        }
         if (gettimeofday(&tv, NULL) != 0 || !timercmp(&tv, &end, <)) {
             return;
         }

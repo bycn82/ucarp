@@ -60,6 +60,21 @@ static int ctrl_holding;
  */
 static int maint_mode;
 static time_t maint_since;
+/*
+ * Set by the SIGINT/SIGQUIT/SIGTERM handler (-z only). The exit itself is
+ * done by carp_shutdown() from the main loop, not in the signal handler:
+ * running scripts, logging or sending packets there is not async-signal
+ * safe.
+ */
+static volatile sig_atomic_t exit_signal;
+/* Set while sending the final "going away" advertisement */
+static int yielding;
+
+/* For ctrl_serve_for(): stop waiting, an exit is pending */
+int carp_exit_pending(void)
+{
+    return exit_signal != 0;
+}
 
 /* Interface state for the control port ("ifrunning" in the state reply) */
 int carp_iface_running(void)
@@ -298,6 +313,11 @@ static void carp_send_ad(struct carp_softc *sc)
     } else {
         advskew = CARP_BULK_UPDATE_MIN_DELAY;
     }    
+    if (yielding) {
+        /* final advertisement before exiting, see carp_shutdown() */
+        advbase = 255;
+        advskew = 255;
+    }
     tv.tv_sec = advbase;
     tv.tv_usec = (unsigned int) (advskew * 1000000ULL / 256ULL);
 
@@ -903,17 +923,42 @@ time_t carp_maint_since(void)
     return maint_since;
 }
 
-RETSIGTYPE sighandler_exit(const int sig)
+/*
+ * Graceful exit (-z), called from the main loop after SIGINT/SIGQUIT/
+ * SIGTERM.
+ *
+ * As MASTER, run the downscript first, so the VIP is never configured on
+ * two hosts, then send one advertisement with advbase=255 and
+ * advskew=255. A backup sees a master that is going to time out and takes
+ * over at once ("Putting MASTER DOWN (going to time out)") instead of
+ * after advbase*deadratio. This is what OpenBSD carp sends when going
+ * down, and unmodified ucarp peers handle it the same way; the backup
+ * does not need -P.
+ */
+static void carp_shutdown(const int sig)
 {
-    (void) sig;
-#ifdef DEBUG
-    logfile(LOG_DEBUG, "sighandler_exit(): Calling [%s] and exiting",
-            downscript);
-#endif
+    logfile(LOG_WARNING, _("Signal %d received: exiting as %s"),
+            sig, carp_state_str((int) sc.sc_state));
     if (sc.sc_state != BACKUP) {
         (void) spawn_handler(dev_desc_fd, downscript);
     }
+    if (sc.sc_state == MASTER) {
+        /* no delayed gratuitous ARP for the VIP we have just removed */
+        sc.sc_delayed_arp = -1;
+        yielding = 1;
+        (void) gettimeofday(&now, NULL);
+        carp_send_ad(&sc);
+        logfile(LOG_WARNING, _("Final advertisement sent "
+                               "(advbase=255 advskew=255): "
+                               "the backup takes over now"));
+    }
     _exit(EXIT_SUCCESS);
+}
+
+/* -z only: just record the signal, carp_shutdown() does the work */
+RETSIGTYPE sighandler_exit(const int sig)
+{
+    exit_signal = sig;
 }
 
 RETSIGTYPE sighandler_usr(const int sig)
@@ -1068,6 +1113,9 @@ int docarp(void)
     strncpy(iface.ifr_name, interface, sizeof iface.ifr_name);
 #endif    
     for (;;) {
+        if (exit_signal != 0) {
+            carp_shutdown((int) exit_signal);
+        }
 #ifdef SIOCGIFFLAGS
         if (ioctl(fd, SIOCGIFFLAGS, &iface) != 0) {
             break;

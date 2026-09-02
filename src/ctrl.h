@@ -51,6 +51,7 @@ const char *carp_state_str(int state);
 const struct carp_stats *carp_get_stats(void);
 int carp_history_count(void);
 int carp_control_maint(int on);
+int carp_exit_pending(void);            /* 1 = exit signal received */
 int carp_maint(void);                   /* 1 = maintenance mode on */
 time_t carp_maint_since(void);          /* when it was switched on, 0 = off */
 const struct carp_transition *carp_history_get(int i);  /* 0 = newest */
