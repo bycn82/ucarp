@@ -11,6 +11,7 @@
 #define CTRL_ERR_IFDOWN (-1)   /* interface down: master refused */
 #define CTRL_ERR_HOLD   (-2)   /* SIGUSR2 hold: master refused */
 #define CTRL_ERR_MAINT  (-3)   /* maintenance mode: master refused */
+#define CTRL_ERR_CHECK  (-4)   /* health check failing: master refused */
 
 /* ---- state history and statistics, kept by carp.c ---- */
 

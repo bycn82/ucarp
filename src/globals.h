@@ -36,4 +36,9 @@ GLOBAL0(sig_atomic_t received_signal);
 GLOBAL0(unsigned int ctrl_port);        /* -c: control port, 0 = off */
 GLOBAL0(unsigned int script_timeout);   /* -T: seconds, 0 = no limit */
 GLOBAL0(char *ctrl_key);                /* -K: key, NULL = master/backup off */
+GLOBAL0(char *check_script);            /* -C: health check, NULL = off */
+GLOBAL(unsigned int check_interval, 2U);  /* -I: seconds between runs */
+GLOBAL0(unsigned int check_timeout);    /* -W: seconds, 0 = interval */
+GLOBAL(unsigned int check_fall, 3U);    /* -N: failures -> health down */
+GLOBAL(unsigned int check_rise, 2U);    /* -R: successes -> health up */
 #endif

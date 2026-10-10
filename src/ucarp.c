@@ -55,6 +55,13 @@ static void usage(void)
         "              maint on <key> | maint off <key>\n"
         "--ctrlkeyfile=<file> (-K <file>): key for master/backup (first line;\n"
         "    without it master/backup are disabled)\n"
+        "--check=<script> (-C <script>): health check; exit 0 = healthy.\n"
+        "    While failing: stay BACKUP, never take over\n"
+        "--checkinterval=<sec> (-I <sec>): seconds between checks (default 2)\n"
+        "--checktimeout=<sec> (-W <sec>): kill a check after <sec>\n"
+        "    (default: checkinterval)\n"
+        "--checkfall=<n> (-N <n>): failures in a row to go down (default 3)\n"
+        "--checkrise=<n> (-R <n>): successes in a row to come back (default 2)\n"
         "\n"
         "Example:\n"
         "\n"
@@ -95,6 +102,7 @@ int main(int argc, char *argv[])
     int fodder;
     int mcast_set = 0;
     int script_timeout_set = 0;
+    int check_opt_set = 0;
     
 #ifdef HAVE_SETLOCALE
     setlocale(LC_ALL, "");
@@ -324,6 +332,43 @@ int main(int argc, char *argv[])
             ctrl_port = (unsigned int) p;
             break;
         }
+        case 'C': {             /* --check: health check script */
+            free(check_script);
+            if ((check_script = strdup(optarg)) == NULL) {
+                die_mem();
+            }
+            break;
+        }
+        case 'I':               /* --checkinterval */
+        case 'W':               /* --checktimeout */
+        case 'N':               /* --checkfall */
+        case 'R': {             /* --checkrise */
+            char *end;
+            unsigned long v = strtoul(optarg, &end, 10);
+            unsigned long max = (fodder == 'N' || fodder == 'R') ?
+                255UL : 3600UL;
+
+            if (*optarg == 0 || *end != 0 || v == 0UL || v > max) {
+                logfile(LOG_ERR, _("Invalid value for -%c: [%s] (1-%lu)"),
+                        fodder, optarg, max);
+                return 1;
+            }
+            switch (fodder) {
+            case 'I':
+                check_interval = (unsigned int) v;
+                break;
+            case 'W':
+                check_timeout = (unsigned int) v;
+                break;
+            case 'N':
+                check_fall = (unsigned int) v;
+                break;
+            default:
+                check_rise = (unsigned int) v;
+            }
+            check_opt_set = 1;
+            break;
+        }
         case 'K': {             /* --ctrlkeyfile: key for master/backup */
             char buf[256];
             char *p;
@@ -402,6 +447,22 @@ int main(int argc, char *argv[])
         logfile(LOG_WARNING, _("Script timeout %u >= advbase*deadratio (%u): "
                                "a stuck script can still cause a split brain"),
                 script_timeout, (unsigned int) advbase * dead_ratio);
+    }
+    /* health check options */
+    if (check_script == NULL) {
+        if (check_opt_set) {
+            logfile(LOG_WARNING, _("--checkinterval/timeout/fall/rise "
+                                   "given without --check: ignored"));
+        }
+    } else {
+        if (access(check_script, X_OK) != 0) {
+            logfile(LOG_ERR, _("Health check %s is not executable: %s"),
+                    check_script, strerror(errno));
+            return 1;
+        }
+        if (check_timeout == 0U) {
+            check_timeout = check_interval;
+        }
     }
     /* a key file is useless without the control port */
     if (ctrl_key != NULL && ctrl_port == 0U) {

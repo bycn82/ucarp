@@ -1,7 +1,7 @@
 #ifndef __CARP_P_H__
 #define __CARP_P_H__ 1
 
-static const char *GETOPT_OPTIONS = "i:s:v:p:Pa:hb:k:x:nu:d:r:zf:Bo:SMFc:m:T:K:";
+static const char *GETOPT_OPTIONS = "i:s:v:p:Pa:hb:k:x:nu:d:r:zf:Bo:SMFc:m:T:K:C:I:W:N:R:";
 
 static struct option long_options[] = {
     { "interface", 1, NULL, 'i' },
@@ -29,6 +29,11 @@ static struct option long_options[] = {
     { "xparam", 1, NULL, 'x' },
     { "ctrlport", 1, NULL, 'c' },         /* new: control port */
     { "ctrlkeyfile", 1, NULL, 'K' },      /* new: control key file */
+    { "check", 1, NULL, 'C' },            /* new: health check script */
+    { "checkinterval", 1, NULL, 'I' },    /* new: seconds between checks */
+    { "checktimeout", 1, NULL, 'W' },     /* new: check timeout */
+    { "checkfall", 1, NULL, 'N' },        /* new: failures -> down */
+    { "checkrise", 1, NULL, 'R' },        /* new: successes -> up */
     { NULL, 0, NULL, 0 }
 };
 

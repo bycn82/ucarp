@@ -45,6 +45,7 @@
 #include "log.h"
 #include "carp_p.h"
 #include "ctrl.h"
+#include "check.h"
 
 #ifdef WITH_DMALLOC
 # include <dmalloc.h>
@@ -60,6 +61,8 @@ static int ctrl_holding;
  */
 static int maint_mode;
 static time_t maint_since;
+/* Health check failing (--check): same effect as maintenance mode */
+static int health_down;
 /*
  * Set by the SIGINT/SIGQUIT/SIGTERM handler (-z only). The exit itself is
  * done by carp_shutdown() from the main loop, not in the signal handler:
@@ -539,9 +542,9 @@ static void carp_master_down(struct carp_softc *sc)
     case MASTER:
         break;
     case BACKUP:
-        if (maint_mode) {
+        if (maint_mode || health_down) {
             /*
-             * Maintenance mode: never take over. This is the only path
+             * Maintenance mode or failing health check: never take over. This is the only path
              * from BACKUP to MASTER (timeout, preemption, "master").
              * Disarm the master-down timer so it doesn't fire again;
              * "maint off" or the next advertisement re-arms it.
@@ -835,6 +838,9 @@ int carp_control_master(void)
     if (maint_mode) {
         return CTRL_ERR_MAINT;  /* "maint off" first */
     }
+    if (health_down) {
+        return CTRL_ERR_CHECK;  /* the health check must recover first */
+    }
     if (!iface_running) {
         return CTRL_ERR_IFDOWN; /* would be undone by the down handling */
     }
@@ -907,10 +913,45 @@ int carp_control_maint(const int on)
     maint_mode = 0;
     maint_since = 0;
     logfile(LOG_WARNING, _("Maintenance mode off: resuming election"));
-    if (iface_running && !ctrl_holding) {
+    if (iface_running && !ctrl_holding && !health_down) {
         carp_setrun(&sc, 0);    /* re-arm the master-down timer */
     }
     return CTRL_OK;
+}
+
+/*
+ * Called by check.c when the health check goes down / comes back.
+ * down: a MASTER steps down (downscript runs); no promotion until up.
+ * up  : resume normal election (unless maintenance mode is still on).
+ */
+void carp_health_set(const int down)
+{
+    if (down) {
+        health_down = 1;
+        if (sc.sc_state == MASTER) {
+            CARP_REASON("check_failed", 0U);
+            carp_set_state(&sc, BACKUP);    /* downscript runs first */
+            /*
+             * Then tell the backup to take over at once, as on a graceful
+             * exit: one advertisement with advbase=255 advskew=255.
+             */
+            sc.sc_delayed_arp = -1;
+            yielding = 1;
+            (void) gettimeofday(&now, NULL);
+            carp_send_ad(&sc);
+            yielding = 0;
+            sc.sc_ad_tmo.tv_sec = 0;
+            sc.sc_ad_tmo.tv_usec = 0;
+        }
+        sc.sc_md_tmo.tv_sec = 0;
+        sc.sc_md_tmo.tv_usec = 0;
+        return;
+    }
+    health_down = 0;
+    if (!maint_mode && iface_running && !ctrl_holding &&
+        sc.sc_state == BACKUP) {
+        carp_setrun(&sc, 0);    /* re-arm the master-down timer */
+    }
 }
 
 int carp_maint(void)
@@ -939,6 +980,7 @@ static void carp_shutdown(const int sig)
 {
     logfile(LOG_WARNING, _("Signal %d received: exiting as %s"),
             sig, carp_state_str((int) sc.sc_state));
+    check_shutdown();
     if (sc.sc_state != BACKUP) {
         (void) spawn_handler(dev_desc_fd, downscript);
     }
@@ -1079,6 +1121,8 @@ int docarp(void)
     if (ctrl_init() != 0) {
         return -1;
     }
+    /* health check (no-op without --check); first run right away */
+    check_init(dev_desc_fd);
 
     if (gettimeofday(&now, NULL) != 0) {
         logfile(LOG_WARNING, _("initializing now to gettimeofday() failed: %s"),
@@ -1116,6 +1160,8 @@ int docarp(void)
         if (exit_signal != 0) {
             carp_shutdown((int) exit_signal);
         }
+        /* reap / time out / start the health check */
+        check_tick();
 #ifdef SIOCGIFFLAGS
         if (ioctl(fd, SIOCGIFFLAGS, &iface) != 0) {
             break;
@@ -1188,6 +1234,8 @@ int docarp(void)
         npfds = 1 + ctrl_fill_pollfds(&pfds[1]);
         /* shorten the wait to the nearest control client deadline */
         poll_sleep_time = ctrl_poll_timeout(poll_sleep_time);
+        /* wake up for the next health check, or to reap a running one */
+        poll_sleep_time = check_poll_timeout(poll_sleep_time);
         nfds = poll(pfds, (nfds_t) npfds, MAX(1, poll_sleep_time));
         if (nfds == -1) {
             if (errno == EINTR) {

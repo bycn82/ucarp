@@ -58,6 +58,7 @@
  *   ctrl_master           "master" command
  *   ctrl_backup           "backup" command
  *   maint_on              "maint on" while MASTER
+ *   check_failed          --check failed --checkfall times while MASTER
  *
  * Up to CTRL_MAX_CLIENTS clients are served at once; further connections
  * wait in the listen backlog. A client has 1 second to send its line and
@@ -70,6 +71,7 @@
 #include <config.h>
 #include "ucarp.h"
 #include "ctrl.h"
+#include "check.h"
 #include "log.h"
 
 #ifdef WITH_DMALLOC
@@ -300,6 +302,43 @@ static void out_kip(struct out * const o, const char *k,
     }
 }
 
+/* "check" object of the state reply, null without --check */
+static void build_check(struct out * const o)
+{
+    const struct check_status * const cs = check_get_status();
+    char tmp[32];
+
+    out_key(o, "check", 0);
+    if (check_script == NULL) {
+        out_raw(o, "null");
+        return;
+    }
+    out_raw(o, "{");
+    out_key(o, "script", 1);
+    out_str(o, check_script);
+    out_kstr(o, "status", cs->down ? "down" :
+             (cs->last_result == CHECK_RES_NONE ? "pending" : "up"));
+    out_kuint(o, "down_since", (unsigned long) cs->down_since);
+    out_kuint(o, "interval", (unsigned long) check_interval);
+    out_kuint(o, "timeout", (unsigned long) check_timeout);
+    out_kuint(o, "fall", (unsigned long) check_fall);
+    out_kuint(o, "rise", (unsigned long) check_rise);
+    out_kuint(o, "fails", (unsigned long) cs->fails);
+    out_kuint(o, "oks", (unsigned long) cs->oks);
+    out_kbool(o, "running", cs->running);
+    out_kstr(o, "last_result", check_result_str(cs->last_result));
+    out_key(o, "last_rc", 0);
+    snprintf(tmp, sizeof tmp, "%d", cs->last_rc);
+    out_raw(o, tmp);
+    out_kuint(o, "last_ms", (unsigned long) (cs->last_ms < 0L ? 0L :
+                                             cs->last_ms));
+    out_kuint(o, "last_time", (unsigned long) cs->last_time);
+    out_kuint(o, "runs", cs->runs);
+    out_kuint(o, "failures", cs->failures);
+    out_kuint(o, "timeouts", cs->timeouts);
+    out_raw(o, "}");
+}
+
 /* "peer", "stats" and "history" objects of the state reply */
 static void build_history(struct out * const o)
 {
@@ -404,6 +443,7 @@ static void build_state(struct out * const o)
     out_kbool(o, "ifrunning", carp_iface_running() != 0);
     out_kbool(o, "maint", carp_maint() != 0);
     out_kuint(o, "maint_since", (unsigned long) carp_maint_since());
+    build_check(o);
     if (inet_ntop(AF_INET, inaddr_carp_group, ip, sizeof ip) == NULL) {
         ip[0] = 0;
     }
@@ -584,6 +624,10 @@ static void process_line(struct client * const c)
         }
         if (rc == CTRL_ERR_IFDOWN) {
             client_reply_str(c, "{\"error\":\"interface down\"}\n");
+            return;
+        }
+        if (rc == CTRL_ERR_CHECK) {
+            client_reply_str(c, "{\"error\":\"health check failing\"}\n");
             return;
         }
         if (rc == CTRL_ERR_MAINT) {
@@ -810,6 +854,8 @@ void ctrl_serve_for(unsigned int ms)
         if (carp_exit_pending()) {
             return;
         }
+        /* keep the health check running while we wait */
+        check_tick();
         if (gettimeofday(&tv, NULL) != 0 || !timercmp(&tv, &end, <)) {
             return;
         }
@@ -817,6 +863,7 @@ void ctrl_serve_for(unsigned int ms)
         to = (int) (left.tv_sec * 1000 + left.tv_usec / 1000) + 1;
         n = ctrl_fill_pollfds(pfds);
         to = ctrl_poll_timeout(to);
+        to = check_poll_timeout(to);
         r = poll(n > 0 ? pfds : NULL, (nfds_t) n, to < 1 ? 1 : to);
         if (r > 0) {
             ctrl_handle_pollfds(pfds);
